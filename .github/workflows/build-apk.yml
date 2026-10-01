@@ -6,7 +6,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -15,11 +15,11 @@ jobs:
       - name: Instalar dependencias
         run: |
           sudo apt-get update
-          sudo apt-get install -y openjdk-17-jdk unzip autoconf automake libtool pkg-config zlib1g-dev libncurses-dev cmake libffi-dev libssl-dev build-essential ccache git
-          pip install --upgrade buildozer cython virtualenv
+          sudo apt-get install -y openjdk-17-jdk unzip autoconf automake libtool libtool-bin pkg-config zlib1g-dev libncurses-dev cmake libffi-dev libssl-dev build-essential ccache git gettext
+          pip install --upgrade buildozer "cython==0.29.36" virtualenv
       - name: Compilar APK debug
         run: |
-          yes | buildozer -v android debug
+          buildozer -v android debug
       - name: Subir APK
         uses: actions/upload-artifact@v4
         with:
