@@ -26,6 +26,7 @@ from kivy.uix.image import Image
 from kivy.uix.label import Label
 from kivy.uix.screenmanager import ScreenManager, Screen
 from kivy.uix.scrollview import ScrollView
+from kivy.uix.textinput import TextInput
 from kivy.utils import platform as kplatform
 
 # ---------- Tema ----------
@@ -222,18 +223,34 @@ def tabla_arp():
     return macs
 
 
-def escanear_red():
+def escanear_red(progress_cb=None, stop_event=None):
     mi_ip = ip_local()
     base = base_subred(mi_ip)
     if not base:
         return {"ok": False, "detalle": mi_ip}
     vivos = []
+    total = 254
+    hecho = [0]
+    cancelado = [False]
     with ThreadPoolExecutor(max_workers=50) as ex:
         fut = {ex.submit(ping_one, "%s%d" % (base, i)): "%s%d" % (base, i)
                for i in range(1, 255)}
         for f in as_completed(fut):
+            if stop_event is not None and stop_event.is_set():
+                cancelado[0] = True
+                for g in fut:
+                    g.cancel()
+                break
+            hecho[0] += 1
             if f.result():
                 vivos.append(fut[f])
+            if progress_cb and hecho[0] % 10 == 0:
+                try:
+                    progress_cb(hecho[0], total)
+                except Exception:
+                    pass
+    if cancelado[0]:
+        return {"ok": False, "detalle": "cancelado", "parcial": vivos}
     macs = tabla_arp()
     gw = gateway_defecto()
     devs = []
@@ -290,6 +307,37 @@ def guardar(reg):
     except Exception:
         pass
     return jp
+
+
+def leer_historial():
+    try:
+        jp = os.path.join(storage_dir(), "historial.json")
+        if not os.path.exists(jp):
+            return []
+        with open(jp, encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, list) else []
+    except Exception:
+        return []
+
+
+def leer_progreso():
+    try:
+        p = os.path.join(storage_dir(), "progreso.json")
+        with open(p, encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def guardar_progreso(d):
+    try:
+        p = os.path.join(storage_dir(), "progreso.json")
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(d, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
 
 
 # ---------- Pantallas ----------
@@ -373,29 +421,49 @@ class ScanScreen(Screen):
     def __init__(self, app, **kw):
         super().__init__(name="scan", **kw)
         self.app = app
+        self.stop = None
         lay = BoxLayout(orientation="vertical", spacing=8, padding=8)
         lay.add_widget(Label(
             text="[color=%s][b]Dispositivos en tu red[/b][/color]\n[color=9DB2CE][size=13]Solo redes con permiso - tarda 15-40 s[/size][/color]" % CYAN_H,
             markup=True, size_hint_y=None, height=56))
-        btn = CardBtn(text="ESCANEAR RED", size_hint_y=None, height=58,
-                      bg=(0.06, 0.42, 0.55, 1), bold=True)
+        fila = BoxLayout(size_hint_y=None, height=58, spacing=8)
+        btn = CardBtn(text="ESCANEAR", bg=(0.06, 0.42, 0.55, 1), bold=True)
         btn.bind(on_press=lambda *_: self.run())
-        lay.add_widget(btn)
+        fila.add_widget(btn)
+        b_cancel = CardBtn(text="DETENER", bg=(0.45, 0.15, 0.15, 1))
+        b_cancel.bind(on_press=lambda *_: self.cancelar())
+        fila.add_widget(b_cancel)
+        lay.add_widget(fila)
         self.sc, self.out = make_log()
         lay.add_widget(self.sc)
         self.out.text = "Lista quien esta conectado a tu misma red, con marca y tipo estimado."
         self.add_widget(lay)
 
     def run(self):
-        self.out.text = "Escaneando (15-40 s)..."
+        self.stop = threading.Event()
+        self.out.text = "Escaneando..."
         threading.Thread(target=self._run, daemon=True).start()
+
+    def cancelar(self):
+        if self.stop is not None:
+            self.stop.set()
+            self.out.text += "\nDeteniendo..."
+
+    def _prog(self, hecho, total):
+        Clock.schedule_once(
+            lambda dt: setattr(self.out, "text",
+                               "Escaneando... %d/%d" % (hecho, total)))
 
     def _run(self):
         try:
-            r = escanear_red()
+            r = escanear_red(progress_cb=self._prog, stop_event=self.stop)
             if not r.get("ok"):
-                set_text(self.out, "No se pudo determinar la subred.")
+                if r.get("detalle") == "cancelado":
+                    set_text(self.out, "Escaneo detenido por ti.")
+                else:
+                    set_text(self.out, "No se pudo determinar la subred.")
                 return
+            self.app.ultimo_scan = r
             t = "[b]%d dispositivos[/b] (mi IP %s)\n\n" % (r["total"], r["mi_ip"])
             for x in r["dispositivos"]:
                 t += "[color=%s]%s[/color]  %s\n  %s | %s\n" % (
@@ -480,6 +548,178 @@ class LearnScreen(Screen):
         out.text = t
         self.add_widget(lay)
 
+    def on_enter(self):
+        try:
+            p = leer_progreso()
+            if not p.get("learn"):
+                p["learn"] = True
+                guardar_progreso(p)
+        except Exception:
+            pass
+
+
+class LabScreen(Screen):
+    """Laboratorio: misiones, quiz, medidor de claves, vista atacante."""
+
+    def __init__(self, app, **kw):
+        super().__init__(name="lab", **kw)
+        self.app = app
+        self.q_idx = 0
+        self.q_pts = 0
+        lay = BoxLayout(orientation="vertical", spacing=8, padding=8)
+        lay.add_widget(Label(
+            text="[color=%s][b]Laboratorio[/b][/color]\n[color=9DB2CE][size=13]Experimentos legales y divertidos[/size][/color]" % CYAN_H,
+            markup=True, size_hint_y=None, height=56))
+        fila = BoxLayout(size_hint_y=None, height=50, spacing=6)
+        for nombre, fn in (("Misiones", self.show_misiones),
+                           ("Quiz", self.start_quiz),
+                           ("Claves", self.show_claves),
+                           ("Atacante", self.show_atacante)):
+            b = CardBtn(text=nombre, font_size=13)
+            b.bind(on_press=lambda inst, f=fn: f())
+            fila.add_widget(b)
+        lay.add_widget(fila)
+        self.oprow = BoxLayout(size_hint_y=None, height=0, spacing=6)
+        lay.add_widget(self.oprow)
+        self.sc, self.out = make_log()
+        lay.add_widget(self.sc)
+        self.out.text = "Elige un experimento. Todo es contra tu red o simulado: nada ilegal."
+        self.add_widget(lay)
+
+    def _limpiar_op(self, h=0):
+        self.oprow.clear_widgets()
+        self.oprow.height = h
+
+    # ----- Misiones -----
+    def show_misiones(self):
+        try:
+            est = audit.estado_misiones(leer_historial(), leer_progreso())
+            hechas = sum(1 for v in est.values() if v)
+            t = "[b]Misiones %d/%d[/b]\n\n" % (hechas, len(audit.MISIONES))
+            for m in audit.MISIONES:
+                marca = "[color=34D399][x][/color]" if est.get(m["id"]) else "[color=9DB2CE][ ][/color]"
+                t += "%s [b]%s[/b]\n  %s\n" % (marca, m["titulo"], m["desc"])
+            if hechas == len(audit.MISIONES):
+                t += "\n[color=34D399][b]Rango: Guardian de la red. Bien hecho.[/b][/color]"
+            else:
+                t += "\n[color=9DB2CE]Completa acciones en la app para marcarlas.[/color]"
+            self._limpiar_op()
+            self.out.text = t
+        except Exception as e:
+            self.out.text = "Error: %s" % e
+
+    # ----- Quiz -----
+    def start_quiz(self):
+        self.q_idx = 0
+        self.q_pts = 0
+        self._pregunta()
+
+    def _pregunta(self):
+        self._limpiar_op(h=170)
+        if self.q_idx >= len(audit.QUIZ):
+            best = 0
+            try:
+                p = leer_progreso()
+                best = max(int(p.get("quiz_best", 0) or 0), self.q_pts)
+                p["quiz_best"] = best
+                guardar_progreso(p)
+            except Exception:
+                best = self.q_pts
+            if self.q_pts == len(audit.QUIZ):
+                extra = "[color=34D399][b]Perfecto: mente de analista.[/b][/color]"
+            elif self.q_pts >= 4:
+                extra = "[color=FBBF24]Bien, pero repasa las que fallaste.[/color]"
+            else:
+                extra = "[color=F87171]Toca releer Aprende y reintentar.[/color]"
+            self.out.text = "[b]Quiz: %d/%d[/b] (récord %d)\n%s" % (
+                self.q_pts, len(audit.QUIZ), best, extra)
+            return
+        q = audit.QUIZ[self.q_idx]
+        self.out.text = "[b]Pregunta %d/%d[/b]\n%s" % (
+            self.q_idx + 1, len(audit.QUIZ), q["q"])
+        for i, op in enumerate(q["opts"]):
+            b = CardBtn(text=op, font_size=13)
+            b.bind(on_press=lambda inst, n=i: self._responder(n))
+            self.oprow.add_widget(b)
+
+    def _responder(self, n):
+        q = audit.QUIZ[self.q_idx]
+        if n == q["ok"]:
+            self.q_pts += 1
+            fb = "[color=34D399]Correcto.[/color]"
+        else:
+            fb = "[color=F87171]Fallaste.[/color]"
+        self.out.text = "%s\n%s\n\nPulsa Quiz para seguir." % (fb, q["porque"])
+        self._limpiar_op(h=56)
+        b = CardBtn(text="Siguiente >>")
+        b.bind(on_press=lambda *_: self._siguiente())
+        self.oprow.add_widget(b)
+
+    def _siguiente(self):
+        self.q_idx += 1
+        self._pregunta()
+
+    # ----- Claves -----
+    def show_claves(self):
+        self._limpiar_op(h=112)
+        self.pw = TextInput(hint_text="Escribe una clave para medirla",
+                            password=True, multiline=False,
+                            size_hint_y=None, height=52)
+        self.oprow.add_widget(self.pw)
+        b = CardBtn(text="MEDIR", size_hint_x=None, width=110)
+        b.bind(on_press=lambda *_: self._medir())
+        self.oprow.add_widget(b)
+        self.out.text = "Medidor local: nada sale de tu móvil. Prueba 'Gato123' vs una frase larga."
+
+    def _medir(self):
+        try:
+            s, et, ent, cons = audit.fuerza_clave(self.pw.text)
+            color = "34D399" if s >= 65 else ("FBBF24" if s >= 45 else "F87171")
+            t = "[size=24][color=%s][b]%s[/b][/color][/size] (%d/100, %.0f bits)\n\n" % (
+                color, et, s, ent)
+            for c in cons:
+                t += "- %s\n" % c
+            self.out.text = t
+        except Exception as e:
+            self.out.text = "Error: %s" % e
+
+    # ----- Vista atacante -----
+    def show_atacante(self):
+        try:
+            self._limpiar_op()
+            r = getattr(self.app, "ultimo_scan", None)
+            if not r:
+                for h in reversed(leer_historial()):
+                    if h.get("dispositivos"):
+                        r = {"mi_ip": h.get("mi_ip"), "gateway": h.get("gateway"),
+                             "total": h.get("num_dispositivos"),
+                             "dispositivos": h.get("dispositivos")}
+                        break
+            if not r:
+                self.out.text = "Primero corre un ESCANEO para usar tus datos reales."
+                return
+            devs = r.get("dispositivos", [])
+            routers = [d for d in devs if d.get("rol") == "Router"]
+            moviles = [d for d in devs if "vil" in str(d.get("rol", ""))]
+            iot = [d for d in devs if "IoT" in str(d.get("rol", "")) or "TV" in str(d.get("rol", ""))]
+            t = ("[color=F87171][b]Si yo fuera un intruso en tu WiFi vería:[/b][/color]\n\n"
+                 "- %s dispositivos colgados de tu red\n"
+                 "- Tu router en %s\n"
+                 "- %s móviles/tablets y %s gadgets IoT/TV\n\n"
+                 % (r.get("total"), r.get("gateway"), len(moviles), len(iot)))
+            for d in routers[:1] + [x for x in devs if x.get("rol") not in ("Router",)][:6]:
+                t += "- %s (%s)\n" % (d.get("ip"), d.get("rol"))
+            t += ("\n[b]Ciérrale la puerta:[/b]\n"
+                  "- Clave WiFi larga y única (mídela arriba)\n"
+                  "- Panel del router sin claves de fábrica\n"
+                  "- Telnet/SSH apagados si no los usas\n"
+                  "- Revisa esta lista cada mes: lo desconocido, fuera\n\n"
+                  "[color=9DB2CE]Educativo: así razona un auditor (y un atacante). "
+                  "Defiéndete antes.[/color]")
+            self.out.text = t
+        except Exception as e:
+            self.out.text = "Error: %s" % e
+
 
 class HistScreen(Screen):
     def __init__(self, **kw):
@@ -521,6 +761,7 @@ class HistScreen(Screen):
 class WiFiApp(App):
     def build(self):
         self.ultimo = None
+        self.ultimo_scan = None
         if kplatform == "android":
             try:
                 from android.permissions import request_permissions, Permission
@@ -544,13 +785,14 @@ class WiFiApp(App):
         self.sm.add_widget(ScanScreen(self))
         self.sm.add_widget(AuditScreen(self))
         self.sm.add_widget(LearnScreen())
+        self.sm.add_widget(LabScreen(self))
         self.sm.add_widget(HistScreen())
         root.add_widget(self.sm)
         nav = BoxLayout(size_hint_y=None, height=56, spacing=6)
         for nombre, clave in (("Inicio", "home"), ("Escaner", "scan"),
-                              ("Auditar", "audit"), ("Aprende", "learn"),
-                              ("Historial", "hist")):
-            b = CardBtn(text=nombre, font_size=13)
+                              ("Auditar", "audit"), ("Lab", "lab"),
+                              ("Aprende", "learn"), ("Historial", "hist")):
+            b = CardBtn(text=nombre, font_size=12)
             b.bind(on_press=lambda inst, c=clave: setattr(self.sm, "current", c))
             nav.add_widget(b)
         root.add_widget(nav)

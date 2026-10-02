@@ -200,3 +200,113 @@ def auto_test():
     except Exception as e:
         out.append(("internet", False, str(e)[:60]))
     return out
+
+# ---------- Laboratorio (diversión legal) ----------
+import math as _math
+
+def fuerza_clave(pw):
+    pw = pw or ""
+    clases = sum([any(c.islower() for c in pw), any(c.isupper() for c in pw),
+                  any(c.isdigit() for c in pw),
+                  any(not c.isalnum() for c in pw)])
+    pool = {0: 1, 1: 26, 2: 52, 3: 62, 4: 94}[clases]
+    ent = len(pw) * (_math.log2(pool) if pool > 1 else 0)
+    malas = ("123", "password", "qwerty", "admin", "clave", "1111", "0000",
+             "abc", "amor", "fecha")
+    if any(m in pw.lower() for m in malas):
+        ent -= 25
+    ent = max(ent, 0)
+    if ent < 28:
+        et = "Muy débil"
+    elif ent < 45:
+        et = "Débil"
+    elif ent < 65:
+        et = "Aceptable"
+    elif ent < 90:
+        et = "Fuerte"
+    else:
+        et = "Excelente"
+    cons = []
+    if len(pw) < 12:
+        cons.append("Mínimo 12 caracteres (mejor 16+).")
+    if clases < 3:
+        cons.append("Mezcla mayúsculas, minúsculas, números y símbolos.")
+    if any(m in pw.lower() for m in malas):
+        cons.append("Evita patrones y datos personales.")
+    cons.append("Única por sitio + gestor de claves + 2FA.")
+    score = min(100, int(ent))
+    return score, et, round(ent, 1), cons
+
+QUIZ = [
+    {"q": "Te llega un SMS del 'banco' con un enlace urgente. ¿Qué haces?",
+     "opts": ["Lo abro rápido y entro con mi clave",
+              "Lo ignoro y entro por la app oficial / llamo al banco",
+              "Lo reenvío a mis contactos"],
+     "ok": 1,
+     "porque": "Phishing: urgencia + enlace = trampa. Siempre verifica por el canal oficial."},
+    {"q": "Necesitas entrar al banco desde un café con WiFi abierta. ¿Qué haces?",
+     "opts": ["La uso igual, total es rápido",
+              "Uso datos móviles o VPN, nunca banca en red abierta",
+              "Pido la clave del WiFi al mesero y listo"],
+     "ok": 1,
+     "porque": "En red abierta cualquiera puede espiar. Datos o VPN."},
+    {"q": "¿Cuál es la mejor clave?",
+     "opts": ["12345678", "MiNombre2024",
+              "Frase larga y única + 2FA activado"],
+     "ok": 2,
+     "porque": "Longitud + unicidad + segundo factor. Eso frena el 99% de ataques."},
+    {"q": "Tu auditoría muestra Telnet (23) abierto en el router. ¿Qué haces?",
+     "opts": ["Nada, seguro es normal",
+              "Lo desactivo en el panel y cambio las claves del router",
+              "Abro más puertos para compensar"],
+     "ok": 1,
+     "porque": "Telnet es de los 90 y va sin cifrar: puerta abierta a tu red."},
+    {"q": "¿Qué es el hacking ético?",
+     "opts": ["Probar seguridad CON permiso y reportar para corregir",
+              "Entrar donde pueda mientras no rompa nada",
+              "Descargar herramientas hacker y probarlas con vecinos"],
+     "ok": 0,
+     "porque": "Sin permiso no es ético: es delito. Permiso + alcance + reporte."},
+    {"q": "Ves un dispositivo desconocido en tu red. ¿Qué haces?",
+     "opts": ["Lo ignoro, será del vecino",
+              "Cambio la clave WiFi, reviso y expulso intrusos",
+              "Le lanzo fuerza bruta para 'darle una lección'"],
+     "ok": 1,
+     "porque": "Defensa: cambiar clave + revisar. Atacar de vuelta también es delito."},
+]
+
+MISIONES = [
+    {"id": "m_scan", "titulo": "Mapea tu territorio",
+     "desc": "Corre un escaneo completo de tu red."},
+    {"id": "m_audit", "titulo": "Audita tu router",
+     "desc": "Corre la auditoría de seguridad."},
+    {"id": "m_80", "titulo": "Blindaje 80+",
+     "desc": "Logra 80/100 o más en la auditoría."},
+    {"id": "m_learn", "titulo": "Conoce las reglas",
+     "desc": "Abre la pantalla Aprende (hacking ético)."},
+    {"id": "m_quiz", "titulo": "Mente de analista",
+     "desc": "Saca 6/6 en el quiz del Laboratorio."},
+]
+
+def estado_misiones(historial, prog):
+    hist = historial or []
+    prog = prog or {}
+    def tiene_num(r):
+        try:
+            return int(str(r.get("num_dispositivos"))) >= 0
+        except Exception:
+            return False
+    def tiene_score(r):
+        return str(r.get("seg_score", "")) not in ("", "None")
+    def score80(r):
+        try:
+            return int(r.get("seg_score")) >= 80
+        except Exception:
+            return False
+    return {
+        "m_scan": any(tiene_num(r) for r in hist),
+        "m_audit": any(tiene_score(r) for r in hist),
+        "m_80": any(score80(r) for r in hist),
+        "m_learn": bool(prog.get("learn")),
+        "m_quiz": int(prog.get("quiz_best", 0) or 0) >= len(QUIZ),
+    }
