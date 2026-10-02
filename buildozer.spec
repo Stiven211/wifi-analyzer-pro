@@ -12,7 +12,6 @@ android.permissions = INTERNET,ACCESS_NETWORK_STATE,ACCESS_WIFI_STATE,ACCESS_FIN
 android.api = 33
 android.minapi = 24
 android.ndk = 25b
-android.gradle_dependencies =
 android.enable_androidx = True
 p4a.branch = v2024.01.21
 
