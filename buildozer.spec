@@ -14,7 +14,7 @@ android.minapi = 24
 android.ndk = 25b
 android.gradle_dependencies =
 android.enable_androidx = True
-p4a.branch = master
+p4a.branch = v2024.01.21
 
 [buildozer]
 log_level = 2
